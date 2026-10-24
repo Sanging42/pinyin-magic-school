@@ -1,7 +1,7 @@
-# Deploy the repository root to GitHub Pages.
-# Creating a Pages site with source "Deploy from a branch" requires
-# administration permission, which this repository token does not have.
-# This workflow publishes the same root files (index.html, Build, TemplateData).
+# Publish the repository root to GitHub Pages.
+# "Deploy from a branch" (build_type legacy) needs administration:write.
+# This job asks for that source first, then enables Pages with build_type
+# workflow, which the Pages deployment token is allowed to create.
 name: Deploy static content to Pages
 
 on:
@@ -27,30 +27,74 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Enable GitHub Pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          request() {
+            local method="$1"
+            local body="$2"
+            local outfile="$3"
+            curl -sS -o "${outfile}" -w "%{http_code}" \
+              -X "${method}" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${REPO}/pages" \
+              -d "${body}"
+          }
+
+          legacy='{"build_type":"legacy","source":{"branch":"main","path":"/"}}'
+          code=$(request POST "${legacy}" /tmp/pages-legacy.json)
+          echo "POST legacy main / -> ${code}"
+          cat /tmp/pages-legacy.json
+          echo
+
+          if [ "${code}" = "201" ] || [ "${code}" = "200" ] || [ "${code}" = "409" ]; then
+            echo "Pages source is the main branch root."
+            exit 0
+          fi
+
+          code=$(request POST '{"build_type":"workflow"}' /tmp/pages-workflow.json)
+          echo "POST workflow -> ${code}"
+          cat /tmp/pages-workflow.json
+          echo
+          case "${code}" in
+            200|201|409) ;;
+            *) exit 1 ;;
+          esac
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: .
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
-      - name: Set branch publishing source when permitted
+
+      - name: Prefer branch source when the token allows it
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          payload='{"build_type":"legacy","source":{"branch":"main","path":"/"}}'
           code=$(curl -sS -o /tmp/pages.json -w "%{http_code}" \
             -X PUT \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "https://api.github.com/repos/${REPO}/pages" \
-            -d "${payload}")
-          echo "PUT /pages -> ${code}"
+            -d '{"build_type":"legacy","source":{"branch":"main","path":"/"}}')
+          echo "PUT legacy main / -> ${code}"
           cat /tmp/pages.json
           echo
           gh api "/repos/${REPO}/pages" || true
